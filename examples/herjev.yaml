@@ -1,0 +1,133 @@
+# herjev configuration. ${VAR} and ${VAR:-default} are read from the
+# environment and ./.env next to this file.
+#
+# Every block below selects an implementation by `type:` — swap providers by
+# changing the type, add new ones by registering a class (see ARCHITECTURE.md).
+# `herjev providers` lists what is available.
+
+# ───────────────────────── where logs come from (poll / listen)
+sources:
+  - name: api-prod
+    type: ssh                    # poll: tail over SSH (uses ~/.ssh/config)
+    target: deploy@api-1.example.com
+    paths: [/var/log/api/app.log]
+    service: api
+    project: shop                # dashboard grouping; default: Loki `project` label, else source name
+
+  - name: payments-journal
+    type: ssh
+    target: ops@pay-1.example.com
+    journal_units: [payments.service]
+    service: payments
+    project: shop
+
+  - name: k8s-checkout
+    type: command                # poll: any streaming command
+    command: kubectl logs -f deploy/checkout -n prod --since=1s
+    service: checkout
+
+  - name: loki
+    type: loki                   # poll: Grafana Loki LogQL
+    url: ${LOKI_URL:-http://loki:3100}
+    query: '{env="prod"} |~ "(?i)warn|error|fatal|panic"'
+    interval: 15
+
+  - name: push
+    type: webhook                # listen: Fluent Bit / Vector / apps POST here
+    port: 8787
+    path: /logs
+    token: ${HERJEV_WEBHOOK_TOKEN:-}
+
+  # - name: syslog
+  #   type: syslog               # listen: UDP syslog
+  #   port: 5514
+
+# ───────────────────────── Jev decides whether/how urgently to alert
+decider:
+  type: chain                    # Jev first, deterministic rules if Jev is unreachable
+  deciders:
+    - type: jev
+      model: typesafe/jev-1.13   # or ~typesafe/jev-latest
+      base_url: https://openrouter.ai        # OpenRouter provides the Jev API key
+      api_key_env: OPENROUTER_API_KEY
+      notify_threshold: 0.5      # min P(should_notify)
+      min_urgency: 1             # 0 ignore, 1 soon, 2 within the hour, 3 page now
+      always_notify: [fatal, panic]
+      guidance: >
+        Payments and checkout are revenue-critical. 4xx client errors and
+        "retrying" warnings that succeed are noise.
+    - type: rules
+
+# ───────────────────────── the LLM thinks about the issue and advises
+analyzer:
+  type: chain
+  analyzers:
+    - type: gemini
+      model: gemini-3.8-flash
+      api: interactions          # or generate_content
+      api_key_env: GEMINI_API_KEY
+      runbook: |
+        Services run on Ubuntu + systemd; Postgres 16 behind PgBouncer;
+        deploys via ArgoCD (rollback: argocd app rollback <app>).
+    - type: openai               # fallback: any model via OpenRouter
+      model: google/gemini-3.8-flash
+      base_url: https://openrouter.ai/api/v1
+      api_key_env: OPENROUTER_API_KEY
+
+# ───────────────────────── channels (named) and routing
+channels:
+  oncall-telegram:
+    type: telegram
+    chat_id: "-100123"
+    # thread_id: 17              # forum topic
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+  ops-discord:
+    type: discord
+    webhook_url: ${DISCORD_WEBHOOK_URL}
+  console:
+    type: console
+    # enabled: false             # turn a channel off: nothing is sent to it, routes skip it
+    # auto: false                # routes skip it, but the portal can still send a ticket to it
+  # slack-alerts:  {type: slack, webhook_url: "${SLACK_WEBHOOK_URL}"}
+  # Teams group chat, posted as a Teams user (scripts/setup-teams.sh signs in
+  # and sets TEAMS_APP_ID, TEAMS_TENANT_ID, TEAMS_CHAT_ID):
+  # teams:         {type: teams}
+  # Hand incidents to another agent (e.g. a Hermes webhook route) as JSON:
+  # agent:         {type: webhook, url: "http://127.0.0.1:8644/webhooks/herjev",
+  #                 headers: {X-Gitlab-Token: "${AGENT_WEBHOOK_TOKEN}"}}
+
+routes:
+  - match: {levels: [fatal, panic]}
+    channels: [oncall-telegram, ops-discord]
+  - match: {levels: [error], min_urgency: 2}
+    channels: [oncall-telegram]
+  - match: {levels: [warn, error]}
+    channels: [ops-discord]
+
+# ───────────────────────── portal links
+# The portal (dashboard/) is a Cloudflare Worker that reads the same Postgres.
+# Set its address here and every alert ends with an `open:` link to the ticket.
+dashboard:
+  # public_url: https://herjev.example.workers.dev
+
+# ───────────────────────── MCP endpoint for agents
+# Lets an agent (e.g. Hermes with the herjev-oncall skill) call the tools
+# `status`, `incidents`, `incident`, `analyze` and `mute` on this instance at
+# http://<host>:<port>/mcp (needs herjev[mcp]). Every request needs
+# `Authorization: Bearer <token>`; there is no shell and no file access.
+mcp_server:
+  enabled: false
+  host: 127.0.0.1
+  port: 8789
+  token: ${HERJEV_MCP_TOKEN}
+
+# ───────────────────────── pipeline tuning
+pipeline:
+  min_level: warn                # predefined event types: warn/error/fatal/panic
+  window_seconds: 20             # group identical errors seen within this window
+  cooldown_seconds: 600          # don't re-alert same fingerprint unless it escalates
+  context_lines: 30              # preceding lines sent to the LLM
+  analyze_min_urgency: 1
+  max_alerts_per_hour: 60
+  store_dsn: ${HERJEV_DATABASE_URL}   # Postgres with supabase/migrations applied; `store: false` runs without history
+  store_retention_days: 30       # incidents + decision traces older than this are deleted (0 = keep)

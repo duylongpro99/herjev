@@ -1,0 +1,18 @@
+# Zero-infrastructure demo: tail a local file, rules decider (no keys),
+# print alerts to the console. Upgrade by adding the jev/gemini blocks.
+sources:
+  - name: demo
+    type: file
+    path: ./demo.log
+    service: demo
+decider:
+  type: rules
+  warn_min_count: 3
+analyzer:
+  type: none
+channels:
+  console: {type: console}
+pipeline:
+  window_seconds: 3
+  store: false                   # no database needed; set store_dsn to keep history
+  status_file: ./demo-status.json

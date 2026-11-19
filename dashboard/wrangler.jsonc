@@ -1,0 +1,42 @@
+// The portal: the built UI as static assets, and /api/* answered by worker/index.ts
+// from Supabase Postgres through Hyperdrive.
+//
+// The login token is a secret, never part of this file:
+//   npx wrangler secret put HERJEV_DASHBOARD_TOKEN
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "herjev",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+    "binding": "ASSETS"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      // `npx wrangler hyperdrive create herjev --connection-string=<herjev_portal URL> --caching-disabled`
+      "id": "00000000000000000000000000000000",
+      // `wrangler dev` connects here instead: the docker compose Postgres as herjev_portal.
+      "localConnectionString": "postgresql://herjev_portal:portal@127.0.0.1:5432/postgres"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "LOGIN_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 10, "period": 60 }
+    }
+  ],
+  "vars": {
+    // Base URL of this portal, returned by /api/status for links the UI copies.
+    "HERJEV_PUBLIC_URL": ""
+  },
+  // `wrangler dev` port; 8787 is the watcher's webhook port in the local compose.
+  "dev": { "port": 8790 },
+  "workers_dev": true,
+  "observability": { "enabled": true }
+}

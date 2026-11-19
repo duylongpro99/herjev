@@ -1,0 +1,175 @@
+# Production deploy on every push to main: test, back up the database, migrate, deploy the
+# portal Worker, then release the watcher by moving the :production image tag. The VM pulls
+# that tag itself (deploy/update-watcher.sh); `verify` waits until the portal reports the
+# watcher running the released commit. A job runs only if the ones before it passed.
+# Rollback: docs/deployment.md.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Watcher image to release (a full commit sha); empty means this commit"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/duylongpro99/herjev
+  PG_MAJOR: "17" # pg_dump must match the Supabase server's major version
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          build-args: HERJEV_VERSION=${{ github.sha }}
+
+  migrate:
+    needs: test
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pg_dump and age
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -q
+          sudo apt-get install -yq "postgresql-client-$PG_MAJOR" age
+      - name: Back up the herjev schema, encrypted
+        id: backup
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
+        run: |
+          set -o pipefail
+          bin="/usr/lib/postgresql/$PG_MAJOR/bin"
+          # The very first deploy has no schema yet, so there is nothing to back up.
+          exists="$("$bin/psql" "$SUPABASE_DB_URL" -X -tA -v ON_ERROR_STOP=1 \
+            -c "select count(*) from pg_namespace where nspname = 'herjev'")"
+          if [ "$exists" = 0 ]; then
+            echo "schema herjev does not exist yet; skipping the backup"
+            echo "dumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          "$bin/pg_dump" --dbname="$SUPABASE_DB_URL" --schema=herjev -Fc \
+            | age -r "$BACKUP_AGE_RECIPIENT" > "$RUNNER_TEMP/herjev-$GITHUB_SHA.dump.age"
+          echo "dumped=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.backup.outputs.dumped == 'true'
+        with:
+          name: db-backup-${{ github.sha }}
+          path: ${{ runner.temp }}/herjev-${{ github.sha }}.dump.age
+          retention-days: 7
+          if-no-files-found: error
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359 # v3.0.1
+        with:
+          version: 2.122.0
+      - name: Apply migrations
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase db push --db-url "$SUPABASE_DB_URL"
+
+  worker:
+    needs: [migrate, image]
+    runs-on: ubuntu-24.04
+    environment: production
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npx vite build
+      - uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: dashboard
+          packageManager: npm
+          command: deploy
+
+  release:
+    needs: worker
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ inputs.image_tag || github.sha }}
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point :production at the release
+        run: |
+          [[ "$TAG" =~ ^[0-9a-f]{40}$ ]] || { echo "image_tag must be a full commit sha, got: $TAG" >&2; exit 1; }
+          docker buildx imagetools create -t "$IMAGE:production" "$IMAGE:$TAG"
+
+  verify:
+    needs: release
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      TAG: ${{ inputs.image_tag || github.sha }}
+      PORTAL_URL: ${{ vars.PORTAL_URL }}
+    steps:
+      - name: Wait for the watcher to report the release
+        env:
+          TOKEN: ${{ secrets.HERJEV_DASHBOARD_TOKEN }}
+        run: |
+          # The VM checks every 2 minutes and needs up to 3 more to turn healthy; it rolls
+          # back by itself when the release is not healthy, so this then times out.
+          for _ in $(seq 90); do
+            body="$(curl -fsS -H "Authorization: Bearer $TOKEN" "$PORTAL_URL/api/status" || true)"
+            version="$(jq -r '.watcher.version // ""' <<<"$body" 2>/dev/null || true)"
+            age="$(jq -r 'now - (.watcher.updated_at // 0) | floor' <<<"$body" 2>/dev/null || echo 9999)"
+            if [ "$version" = "$TAG" ] && [ "$age" -lt 180 ]; then
+              echo "watcher is running $TAG"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "watcher did not report $TAG within 15 minutes (running: ${version:-unknown})." >&2
+          echo "On the VM: journalctl -u herjev-update, docker logs herjev" >&2
+          exit 1

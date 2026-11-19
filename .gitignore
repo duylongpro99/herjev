@@ -1,0 +1,19 @@
+__pycache__/
+*.egg-info/
+.venv/
+.env
+*.db
+*.db-*
+demo.log
+demo-status.json
+.pytest_cache/
+herjev-data/
+ssh/
+
+.claude/
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.wrangler/
+
+# Internal plans, journals and review reports stay local.
+plans/

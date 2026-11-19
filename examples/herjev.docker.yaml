@@ -1,0 +1,92 @@
+# herjev config for the Docker image (lives at /data/herjev.yaml, i.e.
+# <your data dir>/herjev.yaml on the host). Secrets: <data dir>/.env
+#
+# Works out of the box: log shippers POST to :8787/logs and alerts print to
+# `docker logs`. Add a real channel below, and extend sources as needed.
+
+sources:
+  - name: push
+    type: webhook                  # listen: Fluent Bit / Vector / apps POST here
+    bind: 0.0.0.0
+    port: 8787                     # published by docker-compose
+    path: /logs
+    token: ${HERJEV_WEBHOOK_TOKEN}
+    # project: shop                # dashboard grouping (default: Loki `project` label, else source name)
+
+  # - name: api-prod
+  #   type: ssh                    # poll: keys mounted at /opt/herjev-ssh are copied to
+  #   target: deploy@api-1.example.com   #   /data/ssh by the container
+  #   identity_file: /data/ssh/id_ed25519
+  #   paths: [/var/log/api/app.log]
+  #   service: api
+
+  # - name: host-files
+  #   type: file                   # files from the Docker host: mount e.g. /var/log:/host/log:ro
+  #   path: /host/log/syslog
+
+  # - name: loki
+  #   type: loki                   # a Loki on the Docker host → host.docker.internal
+  #   url: http://host.docker.internal:3100
+  #   query: '{env="prod"} |~ "(?i)warn|error|fatal|panic"'
+
+  # - name: syslog
+  #   type: syslog                 # UDP 5514, published by docker-compose
+  #   port: 5514
+
+decider:
+  type: chain                      # Jev via OpenRouter, rules if no key / unreachable
+  deciders:
+    - type: jev
+      model: typesafe/jev-1.13
+      api_key_env: OPENROUTER_API_KEY
+      always_notify: [fatal, panic]
+    - type: rules
+
+analyzer:
+  type: chain
+  analyzers:
+    - type: gemini
+      model: gemini-3.8-flash
+      api_key_env: GEMINI_API_KEY
+    - type: openai                 # fallback through OpenRouter
+      model: google/gemini-3.8-flash
+      api_key_env: OPENROUTER_API_KEY
+
+channels:
+  log:
+    type: console                  # printed to `docker logs`
+  # oncall:
+  #   type: telegram
+  #   chat_id: "-100123"
+  #   bot_token: ${TELEGRAM_BOT_TOKEN}
+  # teams:                         # Teams group chat (scripts/setup-teams.sh)
+  #   type: teams
+  # agent:                         # hand incidents to another agent (e.g. a Hermes webhook route)
+  #   type: webhook
+  #   url: http://host.docker.internal:8644/webhooks/herjev
+  #   headers: {X-Gitlab-Token: "${AGENT_WEBHOOK_TOKEN}"}
+
+routes:
+  - match: {levels: [warn, error, fatal, panic]}
+    channels: [log]                # add oncall / agent here once configured
+
+# The portal (dashboard/) is a Cloudflare Worker; set its address so every alert
+# ends with an `open:` link to the ticket.
+dashboard:
+  # public_url: https://herjev.example.workers.dev
+
+# MCP endpoint for agents (e.g. Hermes with the herjev-oncall skill): on-call
+# tools only, at http://<host>:8789/mcp with `Authorization: Bearer <token>`.
+# docker-compose publishes it on the host's 127.0.0.1.
+mcp_server:
+  enabled: false
+  host: 0.0.0.0
+  port: 8789
+  token: ${HERJEV_MCP_TOKEN}
+
+pipeline:
+  min_level: warn
+  store_dsn: ${HERJEV_DATABASE_URL}  # set by docker-compose
+  window_seconds: 20
+  cooldown_seconds: 600
+  store_retention_days: 30         # incidents + decision traces older than this are deleted (0 = keep)

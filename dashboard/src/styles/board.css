@@ -1,0 +1,246 @@
+/* The swimlane board: toolbar, column heads, lanes, cells, cards and the move menu. */
+
+/* Ticket status colours, shared by column heads, pills and the move menu. */
+.st-new { --st-c: var(--st-new); }
+.st-inprogress { --st-c: var(--st-inprogress); }
+.st-review { --st-c: var(--st-review); }
+.st-done { --st-c: var(--st-done); }
+.st-cancel { --st-c: var(--st-cancel); }
+
+/* ---------- Toolbar ---------- */
+.board-bar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: var(--space-3) var(--space-5); padding: 0 var(--space-7) var(--space-3);
+}
+.board-bar h2 { margin: 0; font: var(--weight-medium) var(--text-xl) / var(--leading-tight) var(--font-serif); letter-spacing: -0.01em; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-5); }
+.seg-label { font-size: var(--text-sm); color: var(--text-muted); margin-right: var(--space-2); }
+.seg { display: inline-flex; padding: 2px; background: var(--surface-sunken); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.seg button {
+  height: calc(var(--control-h-sm) - 6px); padding: 0 var(--space-3); border: 0; background: transparent;
+  border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-muted); cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: var(--weight-medium); box-shadow: 0 0 0 1px var(--border); }
+.switch { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-muted); cursor: pointer; min-height: var(--control-h-sm); }
+.switch input { appearance: none; margin: 0; width: 30px; height: 18px; border-radius: var(--radius-full); background: var(--gray-400); position: relative; cursor: pointer; transition: background-color var(--dur) var(--ease); }
+.switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); transition: transform var(--dur) var(--ease); }
+.switch input:checked { background: var(--accent); }
+.switch input:checked::after { transform: translateX(12px); }
+.switch:hover { color: var(--text); }
+
+/* ---------- Board ---------- */
+.board-wrap { display: block; padding: 0 var(--space-7) var(--space-8); }
+.board { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.board.dragging { cursor: grabbing; }
+.colhead {
+  display: grid; grid-template-columns: var(--cols);
+  position: sticky; top: 0; z-index: var(--z-sticky);
+  background: var(--surface); border-bottom: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.colhead > div { padding: var(--space-3) var(--space-4); border-left: 1px solid var(--border); min-width: 0; }
+.colhead > div:first-child { border-left: 0; color: var(--text-muted); font-size: var(--text-xs); align-self: end; }
+.colhead .name { font: var(--weight-medium) var(--text-md) / var(--leading-tight) var(--font-serif); display: flex; align-items: baseline; gap: var(--space-2); }
+.colhead .count { font-family: var(--font-serif); color: var(--text-muted); font-weight: var(--weight-regular); }
+.colhead .terminal { background: var(--surface-sunken); }
+.colhead .terminal .name { color: var(--text-muted); }
+.colhead .link-btn.more { min-height: 0; padding: 0; margin-top: 2px; font-size: var(--text-xs); }
+.wip { font-size: var(--text-xs); color: var(--text-muted); margin-top: 2px; display: flex; align-items: center; gap: var(--space-2); }
+.wip-meter { flex: 0 0 48px; height: 4px; border-radius: var(--radius-full); background: var(--gray-200); overflow: hidden; }
+.wip-meter span { display: block; height: 100%; background: var(--gray-500); }
+.wip.over { color: var(--sev-error-ink); }
+.wip.over .wip-meter span { background: var(--sev-error); }
+.colhead .hint { font-size: var(--text-xs); color: var(--text-muted); margin-top: 2px; }
+
+.lane { display: grid; grid-template-columns: var(--cols); border-top: 1px solid var(--border); position: relative; }
+.colhead + .lane { border-top: 0; }
+.lane-head {
+  position: relative; padding: var(--space-3) var(--space-4) var(--space-4) calc(var(--strip-w) + var(--space-4));
+  display: flex; flex-direction: column; gap: var(--space-2); min-width: 0;
+}
+/* Heat strip: colour = worst open level, so the hottest lane reads at a glance. */
+.strip { position: absolute; left: 0; top: 2px; bottom: 2px; width: var(--strip-w); border-radius: 0 3px 3px 0; background: var(--heat, var(--sev-none)); }
+.lane[data-worst="panic"] { --heat: var(--sev-panic); }
+.lane[data-worst="fatal"] { --heat: var(--sev-fatal); }
+.lane[data-worst="error"] { --heat: var(--sev-error); }
+.lane[data-worst="warn"] { --heat: var(--sev-warn); }
+.lane[data-worst="info"], .lane[data-worst="debug"], .lane[data-worst="trace"] { --heat: var(--sev-info); }
+.lane[data-worst="panic"] .lane-head, .lane[data-worst="fatal"] .lane-head { background: linear-gradient(90deg, var(--sev-fatal-soft), transparent 55%); }
+
+.lane-toggle {
+  display: flex; align-items: center; gap: var(--space-2); width: calc(100% + var(--space-2)); min-height: var(--control-h-sm);
+  margin: 0 0 0 calc(var(--space-2) * -1); padding: 0 var(--space-2); border: 0; background: transparent;
+  border-radius: var(--radius-md); cursor: pointer; text-align: left;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+.lane-toggle:hover { background: var(--surface-sunken); }
+.chev { flex: none; width: 16px; height: 16px; color: var(--text-muted); transition: transform var(--dur) var(--ease); }
+.lane[data-collapsed="true"] .chev { transform: rotate(-90deg); }
+.lane-name { font: var(--weight-medium) var(--text-lg) / var(--leading-tight) var(--font-serif); min-width: 0; overflow-wrap: anywhere; }
+.lane-name small { display: block; font: var(--weight-regular) var(--text-xs) / var(--leading-normal) var(--font-sans); color: var(--text-muted); }
+.lane-open { margin-left: auto; font-size: var(--text-sm); color: var(--text-muted); white-space: nowrap; }
+.lane-open b { color: var(--text); font-weight: var(--weight-semibold); }
+.lane-meta { display: flex; align-items: center; gap: var(--space-2); }
+.heat { flex: 1; display: flex; gap: 2px; height: 8px; min-width: 0; }
+.heat span { border-radius: 2px; min-width: 6px; }
+.heat .empty { flex: 1; background: var(--gray-100); }
+.lane-closed { font-size: var(--text-xs); color: var(--text-muted); }
+
+.cell { border-left: 1px solid var(--border); padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; min-height: 72px; transition: opacity var(--dur) var(--ease), background-color var(--dur-fast) var(--ease); }
+.cell.terminal { background: var(--surface-sunken); }
+.cell-label { display: none; }
+.cell-sum { display: none; font-size: var(--text-xs); color: var(--text-muted); padding: var(--space-1) var(--space-2); }
+
+/* Drag and drop: the lane's other cells say whether they take the card. */
+.board.dragging .cell.drop-no { opacity: 0.38; }
+.board.dragging .cell.drop-ok { outline: 1.5px dashed var(--accent); outline-offset: -4px; background: var(--accent-soft); }
+.board.dragging .cell.drop-over { outline-style: solid; }
+
+/* ---------- Card: level edge + level wash, strongest for panic, faintest for info ---------- */
+.card {
+  --edge: var(--sev-info); --edge-w: 2px; --tint: var(--tint-info); --tint-stop: 35%; --line: var(--line-info);
+  position: relative; border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: linear-gradient(90deg, var(--tint), var(--surface) var(--tint-stop));
+  padding: var(--space-2) var(--space-3) var(--space-2) calc(var(--space-3) + 2px);
+  display: flex; flex-direction: column; gap: var(--space-1);
+  cursor: grab; user-select: none; touch-action: manipulation; -webkit-touch-callout: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+.card::before { content: ""; position: absolute; left: -1px; top: var(--space-2); bottom: var(--space-2); width: var(--edge-w); border-radius: 0 2px 2px 0; background: var(--edge); }
+.card.lv-panic { --edge: var(--sev-panic); --edge-w: 4px; --tint: var(--tint-panic); --tint-stop: 80%; --line: var(--line-panic); }
+.card.lv-fatal { --edge: var(--sev-fatal); --edge-w: 3px; --tint: var(--tint-fatal); --tint-stop: 70%; --line: var(--line-fatal); }
+.card.lv-error { --edge: var(--sev-error); --edge-w: 3px; --tint: var(--tint-error); --tint-stop: 55%; --line: var(--line-error); }
+.card.lv-warn  { --edge: var(--sev-warn);  --edge-w: 2px; --tint: var(--tint-warn);  --tint-stop: 45%; --line: var(--line-warn); }
+.card:hover { border-color: var(--border-strong); }
+.card:active { transform: translateY(1px); }
+.card.is-dragging { opacity: 0.5; }
+.card.is-overlay { cursor: grabbing; box-shadow: var(--shadow-overlay); rotate: 1.5deg; }
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.card.cursor { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.card.pending { opacity: 0.7; }
+.card.pending::after {
+  content: ""; position: absolute; left: var(--space-3); right: var(--space-3); bottom: 0; height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 50% 100%;
+  animation: pending 1s linear infinite;
+}
+/* Activity since the last load: a short accent ring. */
+.card.fresh { animation: fresh 2400ms var(--ease); }
+/* Closing a ticket opened from a link pulses its card, so the reader sees where it lives. */
+.card.arrived { animation: arrive 1.8s var(--ease); }
+@keyframes pending { from { background-position: -100% 0; } to { background-position: 200% 0; } }
+@keyframes fresh { 0%, 30% { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); } }
+@keyframes arrive { 0%, 60% { box-shadow: 0 0 0 3px var(--accent-line); border-color: var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.card-top { display: flex; align-items: center; gap: var(--space-2); }
+.age { margin-left: auto; flex: none; font-size: var(--text-xs); color: var(--text-muted); }
+.svc-tag {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--surface-sunken); font: var(--weight-medium) var(--text-xs) / 1.6 var(--font-mono); color: var(--text);
+}
+.svc-tag.none { color: var(--text-subtle); font-family: inherit; font-style: italic; }
+.reopen { font-size: var(--text-xs); color: var(--accent); font-weight: var(--weight-medium); }
+.open-btn { all: unset; cursor: pointer; display: block; }
+.open-btn::after { content: ""; position: absolute; inset: 0; border-radius: var(--radius-md); }
+.open-btn:focus-visible::after { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.msg {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+  font: var(--weight-medium) var(--text-card) / var(--leading-tight) var(--font-serif); color: var(--text);
+}
+/* Headline underline grows on hover. */
+.msg .ul {
+  background-image: linear-gradient(currentColor, currentColor); background-size: 0% 1px; background-repeat: no-repeat; background-position: 0 100%;
+  transition: background-size var(--dur) var(--ease);
+}
+.card:hover .msg .ul, .open-btn:focus-visible .msg .ul { background-size: 100% 1px; }
+.card-foot { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-muted); min-width: 0; }
+.svc { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.occ { white-space: nowrap; }
+/* Above the covering link, so the menu button takes its own presses. */
+.move-btn {
+  position: relative; z-index: 1; margin-left: auto; flex: none;
+  height: var(--control-h-sm); padding: 0 var(--space-2); border: 1px solid var(--border); background: var(--surface);
+  border-radius: var(--radius-sm); font-size: var(--text-xs); color: var(--text-muted); cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.move-btn:hover, .move-btn[aria-expanded="true"] { background: var(--surface-sunken); color: var(--text); }
+.move-btn:disabled { opacity: 0.55; cursor: default; }
+/* Terminal columns stay quiet: the level edge remains, the wash goes. */
+.card.terminal { background: var(--surface); border-color: var(--border); cursor: pointer; }
+.card.terminal::before { opacity: 0.55; }
+.card.terminal .msg { color: var(--text-muted); font-weight: var(--weight-regular); }
+
+/* Level badge: colour + shape + text, never colour alone. */
+.lvl {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 6px;
+  border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em; text-transform: uppercase; white-space: nowrap;
+  background: var(--sev-info-soft); color: var(--sev-info-ink); box-shadow: inset 0 0 0 1px var(--border);
+}
+.lvl::before { content: ""; width: 7px; height: 2px; background: currentColor; }
+.lvl-panic { background: var(--sev-panic); color: var(--sev-panic-ink); box-shadow: none; }
+.lvl-panic::before { width: 7px; height: 7px; transform: rotate(45deg); }
+.lvl-fatal { background: var(--sev-fatal-soft); color: var(--sev-fatal-ink); box-shadow: inset 0 0 0 1px var(--line-fatal); }
+.lvl-fatal::before { clip-path: polygon(50% 0, 100% 100%, 0 100%); width: 8px; height: 8px; }
+.lvl-error { background: var(--sev-error-soft); color: var(--sev-error-ink); box-shadow: inset 0 0 0 1px var(--line-error); }
+.lvl-error::before { width: 7px; height: 7px; border-radius: 1px; }
+.lvl-warn { background: var(--sev-warn-soft); color: var(--sev-warn-ink); box-shadow: inset 0 0 0 1px var(--line-warn); }
+.lvl-warn::before { width: 7px; height: 7px; border-radius: 50%; }
+.lvl-none { background: var(--surface-sunken); color: var(--text-muted); box-shadow: none; }
+.lvl-none::before { display: none; }
+
+/* ---------- Move menu: portaled and fixed, so lane edges never clip it ---------- */
+.menu {
+  position: fixed; z-index: var(--z-dropdown); min-width: 180px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay); padding: var(--space-1); margin: 0; list-style: none;
+  animation: rise var(--dur) var(--ease);
+}
+.menu .menu-title { font-size: var(--text-xs); color: var(--text-muted); padding: var(--space-1) var(--space-2); }
+.menu button {
+  display: flex; width: 100%; align-items: center; gap: var(--space-2); min-height: var(--control-h);
+  padding: 0 var(--space-2); border: 0; background: transparent; border-radius: var(--radius-md);
+  text-align: left; font-size: var(--text-sm); cursor: pointer;
+}
+.menu button:hover, .menu button:focus-visible { background: var(--accent-soft); color: var(--accent-hover); outline: none; }
+.menu .dot { width: 8px; height: 8px; margin: 0; border-radius: 50%; border: 1.5px solid var(--st-c, var(--text-muted)); }
+
+/* ---------- Empty, error and loading ---------- */
+.notice { padding: var(--space-7) var(--space-6); text-align: center; color: var(--text-muted); }
+.notice strong { display: block; color: var(--text); font: var(--weight-regular) italic var(--text-lg) / var(--leading-tight) var(--font-serif); margin-bottom: var(--space-2); }
+.notice .btn { margin-top: var(--space-3); }
+.hidden-note { margin: 0; padding: var(--space-3) var(--space-4); font-size: var(--text-xs); color: var(--text-muted); border-top: 1px solid var(--border); }
+.card.skeleton { cursor: default; gap: var(--space-2); background: var(--surface); }
+.card.skeleton:hover { border-color: var(--line); }
+.sk { display: block; height: 10px; border-radius: var(--radius-sm); background: var(--gray-200); animation: shimmer 1.2s ease-in-out infinite alternate; }
+.sk-badge { width: 42px; height: 16px; }
+.sk-title { height: 16px; width: 85%; }
+.sk-line.short { width: 60%; }
+@keyframes shimmer { from { opacity: 1; } to { opacity: 0.45; } }
+
+/* ---------- Narrow: lanes become an accordion of stacked cells ---------- */
+@media (max-width: 960px) {
+  .board-bar { padding-left: var(--space-4); padding-right: var(--space-4); }
+  .board-wrap { padding: 0 var(--space-4) var(--space-7); }
+  .board { border: 0; background: transparent; display: flex; flex-direction: column; gap: var(--space-3); }
+  .colhead { display: none; }
+  .lane { display: block; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
+  .colhead + .lane { border-top: 1px solid var(--border); }
+  .lane .strip { top: 0; bottom: 0; border-radius: 0; }
+  .cell { border-left: 0; border-top: 1px solid var(--border); padding: var(--space-2) var(--space-3) var(--space-3) calc(var(--strip-w) + var(--space-3)); min-height: 0; }
+  .cell.is-empty { display: none; }
+  /* While dragging every cell of the card's lane is a target, empty or not. */
+  .board.dragging .cell.is-empty.drop-ok { display: flex; min-height: 56px; }
+  .cell-label { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-xs); font-weight: var(--weight-semibold); color: var(--text-muted); padding: var(--space-1) 0 0; }
+  .cell-label .count { font-weight: var(--weight-regular); }
+  .move-btn { padding: 0 var(--space-3); }
+  .hidden-note { border: 0; padding: 0 var(--space-1); }
+  .notice { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+}
+@media (max-width: 640px) {
+  .controls { gap: var(--space-2) var(--space-4); }
+}
+
+/* Reached by script when a revealed ticket is not on the board; it is not a control. */
+#board-title:focus { outline: none; }

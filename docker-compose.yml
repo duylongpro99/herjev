@@ -1,0 +1,69 @@
+# herjev log watcher plus a local Postgres for its incident store.
+#
+#   cp .env.docker.example .env                      # compose settings (UID, data dir, ports)
+#   docker compose up -d && docker compose logs -f   # first start seeds herjev.yaml in the data dir
+#   echo OPENROUTER_API_KEY=... >> ${HERJEV_DATA:-./herjev-data}/.env
+#   echo GEMINI_API_KEY=...     >> ${HERJEV_DATA:-./herjev-data}/.env
+#
+# The portal is a Cloudflare Worker (dashboard/); run it locally with
+# `cd dashboard && npm run dev:worker`, which reads this Postgres.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: herjev-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      HERJEV_WATCHER_PASSWORD: ${HERJEV_WATCHER_PASSWORD:-watcher}
+      HERJEV_PORTAL_PASSWORD: ${HERJEV_PORTAL_PASSWORD:-portal}
+    volumes:
+      - herjev-pg:/var/lib/postgresql/data
+      # Applied once, when the volume is empty. Later migrations: scripts/apply-migrations.sh.
+      - ./supabase/migrations:/herjev-migrations:ro
+      - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/herjev.sh:ro
+    ports:
+      - "127.0.0.1:${HERJEV_POSTGRES_PORT:-5432}:5432"   # tests, `wrangler dev`
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  herjev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        # Make files in the data dir owned by your host user.
+        HERJEV_UID: ${HERJEV_UID:-1000}
+        HERJEV_GID: ${HERJEV_GID:-1000}
+    image: herjev:latest
+    container_name: herjev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HERJEV_DATABASE_URL: ${HERJEV_DATABASE_URL:-postgresql://herjev_watcher:watcher@postgres:5432/postgres}
+    volumes:
+      # herjev.yaml, .env and status.
+      - ${HERJEV_DATA:-./herjev-data}:/data
+      # Optional: SSH keys for `type: ssh` sources (copied in with correct perms).
+      - ${HERJEV_SSH_DIR:-./ssh}:/opt/herjev-ssh:ro
+      # Optional: host log files for `type: file` sources.
+      # - /var/log:/host/log:ro
+    ports:
+      - "${HERJEV_WEBHOOK_PORT:-8787}:8787"               # webhook source (log push)
+      - "${HERJEV_SYSLOG_PORT:-5514}:5514/udp"            # syslog source
+      - "127.0.0.1:${HERJEV_MCP_PORT:-8789}:8789"         # MCP endpoint for agents (mcp_server)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"               # reach services on the Docker host
+    healthcheck:
+      test: ["CMD", "herjev", "status", "--max-age", "90"]
+      interval: 60s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+volumes:
+  herjev-pg:

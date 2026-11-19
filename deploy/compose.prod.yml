@@ -1,0 +1,31 @@
+# The watcher on the cloud VM. vm-bootstrap.sh installs this file in /opt/herjev, and
+# update-watcher.sh (herjev-update.timer) runs
+#   HERJEV_IMAGE_TAG=<sha> docker compose -f compose.prod.yml up -d
+# /opt/herjev/.env (written by vm-bootstrap.sh) sets NETBIRD_IP; the watcher's own secrets
+# (HERJEV_DATABASE_URL, API keys, HERMES_HOST, webhook and MCP tokens, TEAMS_*) are in /opt/herjev/data/.env.
+name: herjev
+
+services:
+  herjev:
+    image: ghcr.io/duylongpro99/herjev:${HERJEV_IMAGE_TAG:?set by update-watcher.sh}
+    container_name: herjev
+    restart: unless-stopped
+    env_file: /opt/herjev/data/.env
+    environment:
+      HERJEV_MCP_HOST: 0.0.0.0   # reachable through the port below only
+    volumes:
+      - /opt/herjev/data:/data
+    ports:
+      # Published on the VM's NetBird IP only: nothing listens on its public address.
+      - "${NETBIRD_IP:?run vm-bootstrap.sh first}:8789:8789"
+    logging:
+      driver: local
+      options: { max-size: "10m", max-file: "3" }
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "herjev", "status", "--max-age", "90"]
+      interval: 60s
+      timeout: 10s
+      start_period: 90s
+      start_interval: 10s   # so a deploy sees healthy within seconds, not a full interval
+      retries: 3

@@ -1,0 +1,13 @@
+.venv
+.git
+.pytest_cache
+**/__pycache__
+herjev-data
+ssh
+tests
+*.db
+*.db-*
+demo.log
+.env
+dashboard/node_modules
+src/herjev/dashboard/static

@@ -1,0 +1,84 @@
+# Coolify observability stack (Grafana + Loki + Alloy), read through Grafana's
+# data source proxy with a Viewer service-account token from ./.env.
+# GRAFANA_URL is the proxy URL, e.g. https://grafana.example.com/api/datasources/proxy/uid/loki
+sources:
+    - name: coolify-loki
+      type: loki
+      url: ${GRAFANA_URL}
+      headers:
+          Authorization: Bearer ${GRAFANA_VIEWER_TOKEN}
+      # Prod Alloy sets no `project` label, so match every container except the
+      # observability stack itself and name the project here.
+      query: '{job="docker", service_name!~"(alloy|grafana|loki)-.*"} |~ "(?i)warn|error|fatal|panic"'
+      project: my-project
+      interval: 15
+      # Show service names, not Coolify resource ids: `jobs-scheduler-<id>` becomes
+      # `jobs-scheduler`. Coolify applications are labelled with the bare id, so name
+      # them here (id → name, as in the Coolify UI); `<id>-proxy` follows as `<name>-proxy`.
+      strip_service_ids: true
+      # Watch only these services (names as shown above; list them with
+      # `herjev loki services`). Leave it out to watch every service the query matches.
+      # services: [web-api, jobs-scheduler, jobs-worker]
+      service_names: {}
+          # k3v9q2m7x1c8b4n6z0p5r2t7: web-api
+
+# Jev triage via OpenRouter; falls back to rules if Jev is unreachable.
+decider:
+    type: chain
+    deciders:
+        - type: jev
+          model: typesafe/jev-1.13
+          api_key_env: OPENROUTER_API_KEY
+          always_notify: [fatal, panic]
+        - type: rules
+          warn_min_count: 5
+
+# Root-cause analysis via a custom OpenAI-compatible provider.
+analyzer:
+    type: openai
+    base_url: ${LLM_BASE_URL}
+    model: ${LLM_MODEL}
+    api_key_env: LLM_API_KEY
+    json_mode: json_object
+    # No max_tokens: reasoning models think before they answer, and 2048 tokens of
+    # thinking can leave no room for the JSON.
+    timeout: 180
+    runbook: |
+        Coolify-hosted project "my-project" (Docker). Services: web-api, admin-web,
+        jobs scheduler/workers. Logs are shipped by Alloy to Loki.
+
+# `enabled: false` turns a channel off without removing it: nothing is sent to it
+# and routes skip it. Override from .env with TEAMS_ENABLED / HERMES_ENABLED.
+# `auto: false` keeps a channel out of every route but still built, so it only gets
+# what a person sends from a ticket in the portal ("Gửi tới kênh").
+channels:
+    console: { type: console }
+    # Posted as the Teams user signed in with `herjev teams login` (scripts/setup-teams.sh).
+    teams:
+        type: teams
+        enabled: ${TEAMS_ENABLED:-true}
+    # Hand incidents to a Hermes agent; it relays the alert to Slack and answers
+    # follow-up questions through herjev's MCP endpoint.
+    hermes:
+        type: webhook
+        enabled: ${HERMES_ENABLED:-true}
+        # On the cloud VM, HERMES_HOST is the NetBird IP of the machine running Hermes.
+        url: http://${HERMES_HOST:-127.0.0.1}:8644/webhooks/herjev
+        headers:
+            X-Gitlab-Token: ${HERMES_WEBHOOK_TOKEN}
+
+# The portal (dashboard/) is a Cloudflare Worker; this block only sets alert links.
+dashboard:
+    # public_url: https://herjev.example.workers.dev   # alerts end with an `open:` link to the ticket
+
+# The Hermes agent calls herjev's on-call tools here (herjev-oncall skill).
+mcp_server:
+    enabled: true
+    # 0.0.0.0 inside the VM's container; compose publishes it on the NetBird IP only.
+    host: ${HERJEV_MCP_HOST:-127.0.0.1}
+    port: 8789
+    token: ${HERJEV_MCP_TOKEN}
+
+pipeline:
+    # Supabase Free holds 500 MB; a week of incidents and traces fits comfortably.
+    store_retention_days: 7
